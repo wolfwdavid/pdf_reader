@@ -28,14 +28,14 @@ class AudioBookApp:
         self.stop_flag = threading.Event() 
         self.current_content = [] 
 
-        # 🛑 FIX: Initialize GUI attributes to None to prevent AttributeError 
+        # 🛑 Initialize GUI attributes to None
         self.status_bar = None
         self.start_button = None
         self.pause_button = None
         self.stop_button = None
         self.display_text = None
         self.path_label = None
-        self.speed_label = None # ✨ NEW: Speed label attribute
+        self.speed_label = None 
         # End FIX
 
         # TTS Engine Setup
@@ -48,7 +48,7 @@ class AudioBookApp:
         self.setup_tts_voice()
         self.setup_gui() 
         
-        # 🛑 FINAL FIX 1: Add a protocol handler to stop the TTS engine when the window closes
+        # Add a protocol handler to stop the TTS engine when the window closes
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing) 
 
     # --- New Method to Handle Clean Shutdown ---
@@ -60,12 +60,10 @@ class AudioBookApp:
             
             # 2. Explicitly shut down the pyttsx3 engine
             if self.tts_engine:
-                # Use a small delay to ensure TTS thread recognizes the stop before the app is destroyed
                 time.sleep(TTS_POLL_DELAY) 
                 self.tts_engine.stop()
                 
         except Exception:
-            # Ignore errors during shutdown
             pass
             
         # 3. Destroy the Tkinter root window
@@ -78,10 +76,10 @@ class AudioBookApp:
         if female_voice_id:
             self.tts_engine.setProperty('voice', female_voice_id)
             
-        self.tts_engine.setProperty('rate', DEFAULT_RATE) # Use DEFAULT_RATE
+        self.tts_engine.setProperty('rate', DEFAULT_RATE) 
 
     def setup_gui(self):
-        """Lays out all GUI elements including new controls."""
+        """Lays out all GUI elements including new controls and speed indicators."""
         
         # --- File Selection Frame ---
         file_frame = ttk.Frame(self.master, padding="10")
@@ -90,8 +88,8 @@ class AudioBookApp:
         self.path_label.pack(side='left', fill='x', expand=True)
         ttk.Button(file_frame, text="Select PDF", command=self.select_pdf_file).pack(side='right')
 
-        # --- Control Frame ---
-        control_frame = ttk.Frame(self.master, padding="10 0 10 10")
+        # --- 1. Control Frame (Buttons, Label, Slider, WPM Label) ---
+        control_frame = ttk.Frame(self.master, padding="10 0 10 0")
         control_frame.pack(fill='x')
         
         # Start/Pause/Stop Buttons
@@ -102,17 +100,34 @@ class AudioBookApp:
         self.stop_button = ttk.Button(control_frame, text="⏹️ Stop", command=self.stop_reading, state=tk.DISABLED)
         self.stop_button.pack(side='left', padx=5)
 
-        # Speed Slider & Label (Updated Layout)
+        # Speed Slider & Label 
         ttk.Label(control_frame, text="Speed:").pack(side='left', padx=(20, 5))
         
         self.speed_slider = ttk.Scale(control_frame, from_=100, to=300, orient=tk.HORIZONTAL, command=self._set_speed_from_slider)
-        self.speed_slider.set(DEFAULT_RATE) # Default speed
+        self.speed_slider.set(DEFAULT_RATE) 
         self.speed_slider.pack(side='left', expand=True, fill='x')
         
-        # ✨ NEW: Label to show the current speed in WPM
         self.speed_label = ttk.Label(control_frame, text=f"{DEFAULT_RATE} WPM")
-        self.speed_label.pack(side='left', padx=(5, 0)) # Positioned right after the slider
+        self.speed_label.pack(side='left', padx=(5, 0)) 
         
+        # --- 2. Speed Indicator Frame (New Section) ---
+        speed_frame = ttk.Frame(self.master, padding="10 0 10 10")
+        speed_frame.pack(fill='x')
+        
+        # Create and align the 1X to 5X labels using grid
+        # We need to calculate the column span occupied by the slider and its WPM label in the control_frame,
+        # but since we used PACK, we'll align this frame manually by using a small spacer frame/label
+        # for aesthetic alignment beneath the "Speed:" label.
+        
+        # Calculate padding needed for alignment: (The 'Speed' label and its padding is about 80 pixels wide)
+        ttk.Label(speed_frame, text="", width=15).pack(side='left') # Spacer Label for alignment
+
+        # Define labels and pack them with expand=True to distribute evenly under the slider
+        speed_labels = ["1X Speed", "2X Speed", "3X Speed", "4X Speed", "5X Speed"]
+        
+        for text in speed_labels:
+            ttk.Label(speed_frame, text=text, anchor=tk.CENTER, font=('Arial', 9)).pack(side='left', expand=True, fill='x')
+            
         # --- Display Frame ---
         display_frame = ttk.Frame(self.master, padding="10 0 10 10")
         display_frame.pack(fill='both', expand=True)
@@ -173,11 +188,10 @@ class AudioBookApp:
         # Update TTS engine property
         self.tts_engine.setProperty('rate', speed)
         
-        # ✨ NEW: Update the dedicated speed label
+        # Update the dedicated speed label
         if self.speed_label:
              self.speed_label.config(text=f"{speed} WPM")
              
-        # Optional: update status bar less verbosely, or remove this line
         if self.status_bar:
             self.status_bar.config(text=f"Speed set to {speed} WPM.")
 
