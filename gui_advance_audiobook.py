@@ -2,7 +2,7 @@ import pypdf
 import pyttsx3
 import os
 import threading
-import time # Import for safe sleep
+import time 
 import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,6 +13,7 @@ DEFAULT_PDF_PATH = ""
 MAX_WORKERS = os.cpu_count() * 2
 # Add a short delay for thread-safe polling
 TTS_POLL_DELAY = 0.1 
+DEFAULT_RATE = 180 # Define default rate globally for clarity
 
 class AudioBookApp:
     def __init__(self, master):
@@ -34,6 +35,7 @@ class AudioBookApp:
         self.stop_button = None
         self.display_text = None
         self.path_label = None
+        self.speed_label = None # ✨ NEW: Speed label attribute
         # End FIX
 
         # TTS Engine Setup
@@ -56,7 +58,7 @@ class AudioBookApp:
             # 1. Ensure any ongoing reading process stops
             self.stop_reading() 
             
-            # 2. Explicitly shut down the pyttsx3 event loop
+            # 2. Explicitly shut down the pyttsx3 engine
             if self.tts_engine:
                 # Use a small delay to ensure TTS thread recognizes the stop before the app is destroyed
                 time.sleep(TTS_POLL_DELAY) 
@@ -76,7 +78,7 @@ class AudioBookApp:
         if female_voice_id:
             self.tts_engine.setProperty('voice', female_voice_id)
             
-        self.tts_engine.setProperty('rate', 180) 
+        self.tts_engine.setProperty('rate', DEFAULT_RATE) # Use DEFAULT_RATE
 
     def setup_gui(self):
         """Lays out all GUI elements including new controls."""
@@ -100,11 +102,16 @@ class AudioBookApp:
         self.stop_button = ttk.Button(control_frame, text="⏹️ Stop", command=self.stop_reading, state=tk.DISABLED)
         self.stop_button.pack(side='left', padx=5)
 
-        # Speed Slider
+        # Speed Slider & Label (Updated Layout)
         ttk.Label(control_frame, text="Speed:").pack(side='left', padx=(20, 5))
+        
         self.speed_slider = ttk.Scale(control_frame, from_=100, to=300, orient=tk.HORIZONTAL, command=self._set_speed_from_slider)
-        self.speed_slider.set(180) # Default speed
+        self.speed_slider.set(DEFAULT_RATE) # Default speed
         self.speed_slider.pack(side='left', expand=True, fill='x')
+        
+        # ✨ NEW: Label to show the current speed in WPM
+        self.speed_label = ttk.Label(control_frame, text=f"{DEFAULT_RATE} WPM")
+        self.speed_label.pack(side='left', padx=(5, 0)) # Positioned right after the slider
         
         # --- Display Frame ---
         display_frame = ttk.Frame(self.master, padding="10 0 10 10")
@@ -160,9 +167,17 @@ class AudioBookApp:
             self.current_content = []
 
     def _set_speed_from_slider(self, value):
-        """Updates the TTS engine reading speed based on slider position."""
+        """Updates the TTS engine reading speed and the speed label."""
         speed = int(float(value))
+        
+        # Update TTS engine property
         self.tts_engine.setProperty('rate', speed)
+        
+        # ✨ NEW: Update the dedicated speed label
+        if self.speed_label:
+             self.speed_label.config(text=f"{speed} WPM")
+             
+        # Optional: update status bar less verbosely, or remove this line
         if self.status_bar:
             self.status_bar.config(text=f"Speed set to {speed} WPM.")
 
@@ -210,15 +225,12 @@ class AudioBookApp:
         """Toggles the pause state."""
         if not self.is_reading: return
 
-        # This method MUST acquire the lock to safely tell the engine to pause/resume.
         with self.tts_engine_lock:
             if self.is_paused:
-                self.tts_engine.resume()
                 self.is_paused = False
                 self.pause_button.config(text="⏸️ Pause")
                 self.status_bar.config(text="Reading resumed.")
             else:
-                self.tts_engine.pause()
                 self.is_paused = True
                 self.pause_button.config(text="▶️ Resume")
                 self.status_bar.config(text="Reading paused.")
@@ -229,7 +241,6 @@ class AudioBookApp:
         with self.tts_engine_lock:
             # Safely stop the engine and flush the queue
             self.tts_engine.stop()
-            self.tts_engine.endLoop() # Ensures the pyttsx3 event loop is completely shut down
         self.is_reading = False
         self._cleanup_buttons()
         self.status_bar.config(text="Reading stopped.")
@@ -280,7 +291,7 @@ class AudioBookApp:
     def _reading_process(self):
         """
         The main background thread function for speaking and display.
-        **FIXED:** The lock is now released immediately after .say() to prevent GUI freeze.
+        The lock is released immediately after .say() to prevent GUI freeze.
         """
         
         try:
@@ -292,18 +303,18 @@ class AudioBookApp:
                 self.current_page_text = f"PAGE {page_num}\n\n{raw_text}"
                 self.master.after(0, lambda: self.update_display(self.current_page_text))
                 
-                # 🛑 CRITICAL FIX: Only acquire the lock for the instantaneous .say() call
+                # Only acquire the lock for the instantaneous .say() call
                 with self.tts_engine_lock:
                     self.tts_engine.say(raw_text)
                     
-                # The lock is now released, allowing the main thread to call pause/resume.
-                # This loop keeps the reading thread alive while the engine is busy speaking.
+                # The lock is now released. Thread monitors isBusy() status.
                 while self.tts_engine.isBusy() and not self.stop_flag.is_set():
                     # Check for pause state (which is safely set by the main thread)
                     while self.is_paused and not self.stop_flag.is_set():
+                        # The background thread sleeps when paused.
                         time.sleep(TTS_POLL_DELAY)
                     
-                    # Wait a small amount of time to release resources and check flags
+                    # Wait a small amount of time to check busy status
                     time.sleep(TTS_POLL_DELAY) 
                     
                 # Exit cleanup if stop was requested while busy
