@@ -14,9 +14,8 @@ MAX_WORKERS = os.cpu_count() * 2
 # Add a short delay for thread-safe polling
 TTS_POLL_DELAY = 0.1 
 
-# Define the MIN and MAX WPM for the slider range
+# Define the MIN and MAX WPM for the slider range (100 to 900 WPM for 5X speed)
 MIN_WPM = 100
-# ✨ NEW: 5X Speed based on 180 WPM (180 * 5 = 900)
 MAX_WPM = 900
 DEFAULT_RATE = 180 
 
@@ -42,7 +41,6 @@ class AudioBookApp:
         self.path_label = None
         self.speed_slider = None
         self.x_speed_label = None 
-        # End FIX
 
         # TTS Engine Setup
         self.tts_engine = pyttsx3.init()
@@ -54,17 +52,13 @@ class AudioBookApp:
         self.setup_tts_voice()
         self.setup_gui() 
         
-        # Add a protocol handler to stop the TTS engine when the window closes
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing) 
 
     # --- New Method to Handle Clean Shutdown ---
     def on_closing(self):
         """Called when the user closes the window. Stops TTS engine before quitting."""
         try:
-            # 1. Ensure any ongoing reading process stops
             self.stop_reading() 
-            
-            # 2. Explicitly shut down the pyttsx3 engine
             if self.tts_engine:
                 time.sleep(TTS_POLL_DELAY) 
                 self.tts_engine.stop()
@@ -72,7 +66,6 @@ class AudioBookApp:
         except Exception:
             pass
             
-        # 3. Destroy the Tkinter root window
         self.master.destroy()
         
     def setup_tts_voice(self):
@@ -111,13 +104,12 @@ class AudioBookApp:
         
         speed_control_frame.columnconfigure(0, weight=1)
 
-        # ✨ NEW: Speed Label showing WPM and X.XXx factor
-        initial_rate_x = f"{DEFAULT_RATE} WPM ({DEFAULT_RATE / 180:.2f}x)" 
+        initial_rate_x = f"{DEFAULT_RATE} WPM ({DEFAULT_RATE / DEFAULT_RATE:.2f}x)" 
         self.x_speed_label = ttk.Label(
             speed_control_frame, 
             text=initial_rate_x, 
             anchor=tk.CENTER,
-            font=('Arial', 14, 'bold') # Slightly smaller font since it includes more text
+            font=('Arial', 14, 'bold')
         )
         self.x_speed_label.grid(row=0, column=0, pady=(0, 5), sticky='ew') 
 
@@ -186,19 +178,14 @@ class AudioBookApp:
             self.current_content = []
 
     def _set_speed_from_slider(self, value):
-        """Updates the TTS engine reading speed and the X.XXx speed label."""
+        """Updates the TTS engine reading speed and the WPM/X.XXx speed label."""
         current_wpm = int(float(value))
         
-        # Update TTS engine property
         self.tts_engine.setProperty('rate', current_wpm)
         
-        # Calculate the X.XXx factor based on the default rate (180 WPM = 1.00x)
         x_factor = current_wpm / DEFAULT_RATE
-        
-        # ✨ UPDATED FORMAT: Show WPM first, then the X factor
         speed_text = f"{current_wpm} WPM ({x_factor:.2f}x)"
         
-        # Update the dedicated speed label
         if self.x_speed_label:
              self.x_speed_label.config(text=speed_text)
              
@@ -233,7 +220,7 @@ class AudioBookApp:
     # --- READING CONTROLS ---
 
     def start_reading(self):
-        """Starts the main reading thread."""
+        """Starts the main reading thread and the TTS engine loop."""
         if self.is_reading: return
 
         self.is_reading = True
@@ -244,6 +231,8 @@ class AudioBookApp:
         self.status_bar.config(text="Reading started...")
 
         threading.Thread(target=self._reading_process, daemon=True).start()
+        # ✨ FIX: Start the engine's internal processing loop
+        self.tts_engine.startLoop(False) 
 
     def pause_resume_reading(self):
         """Toggles the pause state."""
@@ -253,10 +242,14 @@ class AudioBookApp:
             if self.is_paused:
                 self.is_paused = False
                 self.pause_button.config(text="⏸️ Pause")
+                # ✨ FIX: Restart the engine's internal loop to resume processing the queue
+                self.tts_engine.startLoop(False) 
                 self.status_bar.config(text="Reading resumed.")
             else:
                 self.is_paused = True
                 self.pause_button.config(text="▶️ Resume")
+                # ✨ FIX: Stop the engine immediately to pause speech
+                self.tts_engine.stop()
                 self.status_bar.config(text="Reading paused.")
 
     def stop_reading(self):
@@ -269,12 +262,10 @@ class AudioBookApp:
         self._cleanup_buttons()
         self.status_bar.config(text="Reading stopped.")
 
-    # --- READING PROCESS ---
+    # --- READING PROCESS (FIXED to use non-blocking methods) ---
 
     def _get_extracted_content_concurrently(self) -> List[Tuple[int, str]]:
-        """
-        Handles concurrent text extraction.
-        """
+        """Handles concurrent text extraction."""
         try:
             if not os.path.exists(self.pdf_file_path):
                  raise FileNotFoundError(f"File not found: {self.pdf_file_path}")
@@ -313,6 +304,7 @@ class AudioBookApp:
     def _reading_process(self):
         """
         The main background thread function for speaking and display.
+        Uses say() and isBusy() to avoid the GIL conflict caused by runAndWait() in a thread.
         """
         
         try:
@@ -324,21 +316,27 @@ class AudioBookApp:
                 self.current_page_text = f"PAGE {page_num}\n\n{raw_text}"
                 self.master.after(0, lambda: self.update_display(self.current_page_text))
                 
-                # Only acquire the lock for the instantaneous .say() call
+                # Wait here if paused (blocking the thread until resumed or stopped)
+                while self.is_paused and not self.stop_flag.is_set():
+                    time.sleep(TTS_POLL_DELAY)
+
+                if self.stop_flag.is_set():
+                    break
+                    
+                # 1. Acquire lock and queue the text.
                 with self.tts_engine_lock:
                     self.tts_engine.say(raw_text)
                     
-                # The lock is now released. Thread monitors isBusy() status.
+                # 2. Poll the engine until the page finishes speaking or the stop flag is set.
                 while self.tts_engine.isBusy() and not self.stop_flag.is_set():
-                    # Check for pause state (which is safely set by the main thread)
+                    # 3. Handle pause/resume state while waiting for busy status to clear
                     while self.is_paused and not self.stop_flag.is_set():
-                        # The background thread sleeps when paused.
+                        # Engine is paused externally via tts_engine.stop() in pause_resume_reading
                         time.sleep(TTS_POLL_DELAY)
                     
                     # Wait a small amount of time to check busy status
                     time.sleep(TTS_POLL_DELAY) 
-                    
-                # Exit cleanup if stop was requested while busy
+                
                 if self.stop_flag.is_set():
                     self.master.after(0, lambda: self.display_text.tag_remove('highlight', 1.0, tk.END))
                     break
