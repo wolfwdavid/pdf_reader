@@ -14,10 +14,11 @@ MAX_WORKERS = os.cpu_count() * 2
 # Add a short delay for thread-safe polling
 TTS_POLL_DELAY = 0.1 
 
-# Define the MIN and MAX WPM for the slider range (100 to 300 WPM)
+# Define the MIN and MAX WPM for the slider range
 MIN_WPM = 100
-MAX_WPM = 300
-DEFAULT_RATE = 180 # 1.00x speed will be mapped to 180 WPM (for the starting UI)
+# ✨ NEW: 5X Speed based on 180 WPM (180 * 5 = 900)
+MAX_WPM = 900
+DEFAULT_RATE = 180 
 
 class AudioBookApp:
     def __init__(self, master):
@@ -40,7 +41,7 @@ class AudioBookApp:
         self.display_text = None
         self.path_label = None
         self.speed_slider = None
-        self.x_speed_label = None # ✨ NEW: Label for the X.XXx speed display
+        self.x_speed_label = None 
         # End FIX
 
         # TTS Engine Setup
@@ -104,25 +105,23 @@ class AudioBookApp:
         self.stop_button = ttk.Button(button_frame, text="⏹️ Stop", command=self.stop_reading, state=tk.DISABLED)
         self.stop_button.pack(side='left', padx=5)
 
-        # --- 2. Speed Slider Frame (New Section for the visual) ---
+        # --- 2. Speed Slider Frame ---
         speed_control_frame = ttk.Frame(self.master, padding="10 0 10 10")
         speed_control_frame.pack(fill='x')
         
-        # We will use Grid for this frame to stack the speed label over the slider
         speed_control_frame.columnconfigure(0, weight=1)
 
-        # ✨ NEW: Speed Label (styled to look like the image)
-        initial_rate_x = f"{DEFAULT_RATE / 180:.2f}x" # Based on 180 WPM = 1x
+        # ✨ NEW: Speed Label showing WPM and X.XXx factor
+        initial_rate_x = f"{DEFAULT_RATE} WPM ({DEFAULT_RATE / 180:.2f}x)" 
         self.x_speed_label = ttk.Label(
             speed_control_frame, 
             text=initial_rate_x, 
             anchor=tk.CENTER,
-            font=('Arial', 16, 'bold') # Larger and bold for visual emphasis
+            font=('Arial', 14, 'bold') # Slightly smaller font since it includes more text
         )
-        # Span the entire width of the slider area
         self.x_speed_label.grid(row=0, column=0, pady=(0, 5), sticky='ew') 
 
-        # Slider Setup
+        # Slider Setup (Updated range to MAX_WPM)
         self.speed_slider = ttk.Scale(
             speed_control_frame, 
             from_=MIN_WPM, 
@@ -196,15 +195,15 @@ class AudioBookApp:
         # Calculate the X.XXx factor based on the default rate (180 WPM = 1.00x)
         x_factor = current_wpm / DEFAULT_RATE
         
-        # Format the speed string
-        speed_text = f"{x_factor:.2f}x"
+        # ✨ UPDATED FORMAT: Show WPM first, then the X factor
+        speed_text = f"{current_wpm} WPM ({x_factor:.2f}x)"
         
         # Update the dedicated speed label
         if self.x_speed_label:
              self.x_speed_label.config(text=speed_text)
              
         if self.status_bar:
-            self.status_bar.config(text=f"Speed set to {current_wpm} WPM ({speed_text}).")
+            self.status_bar.config(text=f"Speed set to {current_wpm} WPM ({x_factor:.2f}x).")
 
     # --- WORD HIGHLIGHTING ---
 
