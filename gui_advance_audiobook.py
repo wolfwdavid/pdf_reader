@@ -31,6 +31,7 @@ class AudioBookApp:
         self.is_paused = False
         self.stop_flag = threading.Event() 
         self.current_content = [] 
+        # Removed is_first_page flag as it's no longer needed
 
         # Initialize GUI attributes
         self.status_bar = None
@@ -47,6 +48,9 @@ class AudioBookApp:
         self.tts_engine_lock = threading.Lock()
         self.tts_engine.connect('started-word', self._on_tts_word)
         self.current_page_text = ""
+        
+        # FIX: Start the non-blocking engine loop immediately after init, exactly once.
+        self.tts_engine.startLoop(False)
 
         # Setup order remains critical: TTS first, then GUI
         self.setup_tts_voice()
@@ -60,10 +64,11 @@ class AudioBookApp:
         try:
             self.stop_reading() 
             if self.tts_engine:
-                # Give a moment for the stop command to process
                 time.sleep(TTS_POLL_DELAY) 
-                self.tts_engine.stop()
-                
+                # Use a lock when interacting with the engine just before stopping
+                with self.tts_engine_lock:
+                    self.tts_engine.stop()
+                    
         except Exception:
             pass
             
@@ -197,7 +202,9 @@ class AudioBookApp:
 
     def _on_tts_word(self, name, location, length):
         """Callback triggered by pyttsx3 when a new word is about to be spoken."""
-        self.master.after(0, lambda: self._highlight_word(location, length))
+        # Check if reading process is paused before triggering highlight
+        if self.is_reading and not self.is_paused:
+            self.master.after(0, lambda: self._highlight_word(location, length))
 
     def _highlight_word(self, location, length):
         """Removes old highlight and applies new highlight to the current word."""
@@ -218,39 +225,35 @@ class AudioBookApp:
         except Exception:
             pass 
 
-    # --- TTS Loop Fix ---
-    def _run_tts_loop(self):
-        """
-        Manually pumps the pyttsx3 event loop using Tkinter's main loop.
-        Called repeatedly via master.after() as long as the engine is busy.
-        """
-        if self.tts_engine.isBusy() and self.is_reading and not self.is_paused:
-            # Call engine.iterate() to process the queued speech events
-            self.tts_engine.iterate()
-            # Reschedule this function to run again very soon
-            self.master.after(10, self._run_tts_loop)
-            
     # --- READING CONTROLS ---
 
     def start_reading(self):
-        """Starts the main reading thread and clears engine queue. UPDATED"""
-        if self.is_reading: return
+        """
+        Starts the main reading thread and clears engine queue.
+        Includes a robust guard against double-clicks.
+        """
+        print("INFO: start_reading called.") # Diagnostic Print
+        if self.is_reading: 
+            print("INFO: Reading already in progress, returning.") # Diagnostic Print
+            return
 
         # 1. Clear engine state before starting a new session
-        self.tts_engine.stop() 
+        # Use the lock for engine interaction
+        with self.tts_engine_lock:
+            self.tts_engine.stop() 
         
+        # 2. Set the state and buttons BEFORE starting the thread
         self.is_reading = True
         self.stop_flag.clear()
         self.start_button.config(state=tk.DISABLED)
         self.pause_button.config(text="⏸️ Pause", state=tk.NORMAL)
         self.stop_button.config(state=tk.NORMAL)
         self.status_bar.config(text="Reading started...")
+        
         print("DEBUG: Starting reading thread...")
         
+        # 3. Start the process
         threading.Thread(target=self._reading_process, daemon=True).start()
-
-        # 2. ✨ NEW FIX: Start the manual TTS loop running on the main thread
-        self.master.after(0, self._run_tts_loop)
 
     def pause_resume_reading(self):
         """Toggles the pause state."""
@@ -260,10 +263,7 @@ class AudioBookApp:
             if self.is_paused:
                 self.is_paused = False
                 self.pause_button.config(text="⏸️ Pause")
-                # When resumed, the polling in _reading_process will continue and allow a new say()
                 self.status_bar.config(text="Reading resumed.")
-                # We restart the iterating loop just in case it stopped during the pause
-                self.master.after(0, self._run_tts_loop) 
             else:
                 self.is_paused = True
                 self.pause_button.config(text="▶️ Resume")
@@ -343,12 +343,15 @@ class AudioBookApp:
                     break
                     
                 # 1. Acquire lock and queue the text.
+                # NOTE: We use .say() here to queue the text and immediately release the lock. 
+                # .say() is non-blocking. The audio is played by the engine's background loop.
                 with self.tts_engine_lock:
                     self.tts_engine.say(raw_text)
-                    # print(f"DEBUG: Queued Page {page_num}. Engine is busy: {self.tts_engine.isBusy()}") # Removed debug print
+                
+                # Diagnostic check (re-added the old check which was successful)
+                print(f"INFO: Page {page_num} queued. Engine busy status: {self.tts_engine.isBusy()}")
                     
                 # 2. Poll the engine until the page finishes speaking or the stop flag is set.
-                # The manual loop _run_tts_loop (running in the main thread) will process the speech.
                 while self.tts_engine.isBusy() and not self.stop_flag.is_set():
                     # 3. Handle pause/resume state while waiting for busy status to clear
                     while self.is_paused and not self.stop_flag.is_set():
@@ -356,8 +359,6 @@ class AudioBookApp:
                     
                     # Wait a small amount of time to check busy status
                     time.sleep(TTS_POLL_DELAY) 
-                
-                # print(f"DEBUG: Finished processing Page {page_num}.") # Removed debug print
                 
                 if self.stop_flag.is_set():
                     self.master.after(0, lambda: self.display_text.tag_remove('highlight', 1.0, tk.END))
