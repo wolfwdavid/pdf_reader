@@ -60,6 +60,7 @@ class AudioBookApp:
         try:
             self.stop_reading() 
             if self.tts_engine:
+                # Give a moment for the stop command to process
                 time.sleep(TTS_POLL_DELAY) 
                 self.tts_engine.stop()
                 
@@ -217,22 +218,39 @@ class AudioBookApp:
         except Exception:
             pass 
 
+    # --- TTS Loop Fix ---
+    def _run_tts_loop(self):
+        """
+        Manually pumps the pyttsx3 event loop using Tkinter's main loop.
+        Called repeatedly via master.after() as long as the engine is busy.
+        """
+        if self.tts_engine.isBusy() and self.is_reading and not self.is_paused:
+            # Call engine.iterate() to process the queued speech events
+            self.tts_engine.iterate()
+            # Reschedule this function to run again very soon
+            self.master.after(10, self._run_tts_loop)
+            
     # --- READING CONTROLS ---
 
     def start_reading(self):
-        """Starts the main reading thread and the TTS engine loop."""
+        """Starts the main reading thread and clears engine queue. UPDATED"""
         if self.is_reading: return
 
+        # 1. Clear engine state before starting a new session
+        self.tts_engine.stop() 
+        
         self.is_reading = True
         self.stop_flag.clear()
         self.start_button.config(state=tk.DISABLED)
         self.pause_button.config(text="⏸️ Pause", state=tk.NORMAL)
         self.stop_button.config(state=tk.NORMAL)
         self.status_bar.config(text="Reading started...")
-
+        print("DEBUG: Starting reading thread...")
+        
         threading.Thread(target=self._reading_process, daemon=True).start()
-        # ✨ FIX: Start the engine's internal processing loop
-        self.tts_engine.startLoop(False) 
+
+        # 2. ✨ NEW FIX: Start the manual TTS loop running on the main thread
+        self.master.after(0, self._run_tts_loop)
 
     def pause_resume_reading(self):
         """Toggles the pause state."""
@@ -242,13 +260,14 @@ class AudioBookApp:
             if self.is_paused:
                 self.is_paused = False
                 self.pause_button.config(text="⏸️ Pause")
-                # ✨ FIX: Restart the engine's internal loop to resume processing the queue
-                self.tts_engine.startLoop(False) 
+                # When resumed, the polling in _reading_process will continue and allow a new say()
                 self.status_bar.config(text="Reading resumed.")
+                # We restart the iterating loop just in case it stopped during the pause
+                self.master.after(0, self._run_tts_loop) 
             else:
                 self.is_paused = True
                 self.pause_button.config(text="▶️ Resume")
-                # ✨ FIX: Stop the engine immediately to pause speech
+                # Stop the engine immediately to pause speech
                 self.tts_engine.stop()
                 self.status_bar.config(text="Reading paused.")
 
@@ -262,7 +281,7 @@ class AudioBookApp:
         self._cleanup_buttons()
         self.status_bar.config(text="Reading stopped.")
 
-    # --- READING PROCESS (FIXED to use non-blocking methods) ---
+    # --- READING PROCESS (Polling for speech completion) ---
 
     def _get_extracted_content_concurrently(self) -> List[Tuple[int, str]]:
         """Handles concurrent text extraction."""
@@ -304,7 +323,7 @@ class AudioBookApp:
     def _reading_process(self):
         """
         The main background thread function for speaking and display.
-        Uses say() and isBusy() to avoid the GIL conflict caused by runAndWait() in a thread.
+        Uses say() and isBusy() for thread-safe asynchronous reading.
         """
         
         try:
@@ -326,16 +345,19 @@ class AudioBookApp:
                 # 1. Acquire lock and queue the text.
                 with self.tts_engine_lock:
                     self.tts_engine.say(raw_text)
+                    # print(f"DEBUG: Queued Page {page_num}. Engine is busy: {self.tts_engine.isBusy()}") # Removed debug print
                     
                 # 2. Poll the engine until the page finishes speaking or the stop flag is set.
+                # The manual loop _run_tts_loop (running in the main thread) will process the speech.
                 while self.tts_engine.isBusy() and not self.stop_flag.is_set():
                     # 3. Handle pause/resume state while waiting for busy status to clear
                     while self.is_paused and not self.stop_flag.is_set():
-                        # Engine is paused externally via tts_engine.stop() in pause_resume_reading
                         time.sleep(TTS_POLL_DELAY)
                     
                     # Wait a small amount of time to check busy status
                     time.sleep(TTS_POLL_DELAY) 
+                
+                # print(f"DEBUG: Finished processing Page {page_num}.") # Removed debug print
                 
                 if self.stop_flag.is_set():
                     self.master.after(0, lambda: self.display_text.tag_remove('highlight', 1.0, tk.END))
