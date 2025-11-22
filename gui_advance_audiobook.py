@@ -210,6 +210,7 @@ class AudioBookApp:
         """Toggles the pause state."""
         if not self.is_reading: return
 
+        # This method MUST acquire the lock to safely tell the engine to pause/resume.
         with self.tts_engine_lock:
             if self.is_paused:
                 self.tts_engine.resume()
@@ -279,7 +280,7 @@ class AudioBookApp:
     def _reading_process(self):
         """
         The main background thread function for speaking and display.
-        Replaces blocking runAndWait() with a safe polling loop.
+        **FIXED:** The lock is now released immediately after .say() to prevent GUI freeze.
         """
         
         try:
@@ -291,17 +292,19 @@ class AudioBookApp:
                 self.current_page_text = f"PAGE {page_num}\n\n{raw_text}"
                 self.master.after(0, lambda: self.update_display(self.current_page_text))
                 
+                # 🛑 CRITICAL FIX: Only acquire the lock for the instantaneous .say() call
                 with self.tts_engine_lock:
                     self.tts_engine.say(raw_text)
-                    # 🛑 CRITICAL FIX 2: Replace runAndWait() with a safe loop
-                    # This prevents the GIL-related Fatal Python Error.
-                    while self.tts_engine.isBusy() and not self.stop_flag.is_set():
-                        # Check for pause state
-                        while self.is_paused and not self.stop_flag.is_set():
-                            time.sleep(TTS_POLL_DELAY)
-                        
-                        # Wait a small amount of time to release resources and check flags
-                        time.sleep(TTS_POLL_DELAY) 
+                    
+                # The lock is now released, allowing the main thread to call pause/resume.
+                # This loop keeps the reading thread alive while the engine is busy speaking.
+                while self.tts_engine.isBusy() and not self.stop_flag.is_set():
+                    # Check for pause state (which is safely set by the main thread)
+                    while self.is_paused and not self.stop_flag.is_set():
+                        time.sleep(TTS_POLL_DELAY)
+                    
+                    # Wait a small amount of time to release resources and check flags
+                    time.sleep(TTS_POLL_DELAY) 
                     
                 # Exit cleanup if stop was requested while busy
                 if self.stop_flag.is_set():
